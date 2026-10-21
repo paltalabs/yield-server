@@ -11,8 +11,9 @@ const SOROBAN_RPC_URL = 'https://soroban-rpc.creit.tech/';
 const SOROBAN_READ_ACCOUNT = stellarSdk.StrKey.encodeEd25519PublicKey(Buffer.alloc(32));
 const CONCURRENCY = 10;
 const EVENTS_PAGE = 1000;
+const RPC_TIMEOUT_MS = 30000;
 
-const server = new stellarSdk.rpc.Server(SOROBAN_RPC_URL);
+const server = new stellarSdk.rpc.Server(SOROBAN_RPC_URL, { timeout: RPC_TIMEOUT_MS });
 
 async function sorobanRead(contractId, method, args = []) {
   const account = new stellarSdk.Account(SOROBAN_READ_ACCOUNT, '0');
@@ -30,7 +31,7 @@ async function sorobanRead(contractId, method, args = []) {
     id: 1,
     method: 'simulateTransaction',
     params: { transaction: tx.toXDR() },
-  });
+  }, { timeout: RPC_TIMEOUT_MS });
   const result = data.result;
   if (data.error || result?.error || !result?.results?.[0])
     throw new Error(`${contractId}.${method}: ${JSON.stringify(data.error || result?.error)}`);
@@ -119,27 +120,18 @@ const apy = async () => {
   const pools = pairs.map((p) => {
     const c0 = coinOf(p.token0);
     const c1 = coinOf(p.token1);
-    if (!c0 && !c1) return null;
+    // Only pools with both tokens priced and named are listed.
+    if (!c0?.symbol || !c1?.symbol) return null;
 
-    const r0 = usd(p.token0, p.reserve0);
-    const r1 = usd(p.token1, p.reserve1);
-    // uni-v2 pools hold equal value on both sides; price an unknown side from the known one
-    const tvlUsd = c0 && c1 ? r0 + r1 : 2 * (r0 ?? r1);
+    const tvlUsd = usd(p.token0, p.reserve0) + usd(p.token1, p.reserve1);
 
     const a = amounts[p.address];
-    let volumeUsd1d = 0;
-    if (a) {
-      const vol =
-        c0 && c1
-          ? usd(p.token0, a.in0) + usd(p.token1, a.in1)
-          : c0
-            ? usd(p.token0, a.in0 + a.out0)
-            : usd(p.token1, a.in1 + a.out1);
-      volumeUsd1d = vol * dayScale;
-    }
+    const volumeUsd1d = a
+      ? (usd(p.token0, a.in0) + usd(p.token1, a.in1)) * dayScale
+      : 0;
 
     const apyBase = tvlUsd > 0 ? ((volumeUsd1d * FEE_RATE * 365) / tvlUsd) * 100 : 0;
-    const symbol = `${c0?.symbol ?? '?'}-${c1?.symbol ?? '?'}`;
+    const symbol = `${c0.symbol}-${c1.symbol}`;
 
     return {
       pool: `${p.address}-stellar`,
@@ -155,7 +147,7 @@ const apy = async () => {
     };
   });
 
-  return pools.filter(Boolean).filter(keepFinite).filter((p) => !p.symbol.includes('?'));
+  return pools.filter(Boolean).filter(keepFinite);
 };
 
 module.exports = {
